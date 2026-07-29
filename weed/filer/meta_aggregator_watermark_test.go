@@ -12,7 +12,10 @@ import (
 // signalled yet holds it at zero (completeness unknown), advances are
 // monotonic, and removed peers stop participating.
 func TestPeerWatermarkBookkeeping(t *testing.T) {
-	ma := &MetaAggregator{peerWatermarks: make(map[pb.ServerAddress]int64)}
+	ma := &MetaAggregator{
+		peerWatermarks:      make(map[pb.ServerAddress]int64),
+		peerFlushWatermarks: make(map[pb.ServerAddress]int64),
+	}
 	a, b := pb.ServerAddress("filer-a:8888"), pb.ServerAddress("filer-b:8888")
 
 	if got := ma.PeerLowWatermarkTsNs(); got != 0 {
@@ -49,5 +52,35 @@ func TestPeerWatermarkBookkeeping(t *testing.T) {
 	ma.deletePeerWatermark(b)
 	if got := ma.PeerLowWatermarkTsNs(); got != 100 {
 		t.Fatalf("after delete: low=%d want 100", got)
+	}
+}
+
+// TestPeerFlushWatermarkBookkeeping mirrors the delivery-watermark semantics
+// for the flush watermark that bounds persisted-log reads: min across peers,
+// zero until every peer has reported, monotonic advances.
+func TestPeerFlushWatermarkBookkeeping(t *testing.T) {
+	ma := &MetaAggregator{
+		peerWatermarks:      make(map[pb.ServerAddress]int64),
+		peerFlushWatermarks: make(map[pb.ServerAddress]int64),
+	}
+	a, b := pb.ServerAddress("filer-a:8888"), pb.ServerAddress("filer-b:8888")
+
+	ma.initPeerWatermark(a)
+	ma.initPeerWatermark(b)
+	ma.advancePeerFlushWatermark(a, 200)
+	if got := ma.PeerLowFlushWatermarkTsNs(); got != 0 {
+		t.Fatalf("unreported peer: low=%d want 0", got)
+	}
+	ma.advancePeerFlushWatermark(b, 150)
+	if got := ma.PeerLowFlushWatermarkTsNs(); got != 150 {
+		t.Fatalf("low=%d want 150", got)
+	}
+	ma.advancePeerFlushWatermark(b, 120) // stale report cannot regress
+	if got := ma.PeerLowFlushWatermarkTsNs(); got != 150 {
+		t.Fatalf("after stale: low=%d want 150", got)
+	}
+	ma.deletePeerWatermark(b)
+	if got := ma.PeerLowFlushWatermarkTsNs(); got != 200 {
+		t.Fatalf("after delete: low=%d want 200", got)
 	}
 }
